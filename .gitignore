@@ -1,1 +1,16 @@
+# binaries
 *.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+bin/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# logs
+*.log
