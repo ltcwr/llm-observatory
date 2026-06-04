@@ -10,8 +10,12 @@ import (
 )
 
 type Chat struct {
-	Prompt string `json:"prompt"`
-	Answer string `json:"answer"`
+	Prompt         string  `json:"prompt"`
+	Answer         string  `json:"answer"`
+	TotalDuration  int64   `json:"total_duration_ns"`
+	EvalCount      int     `json:"eval_count"`
+	EvalDuration   int64   `json:"eval_duration_ns"`
+	TokensPerSec   float64 `json:"tokens_per_sec"`
 }
 
 type Message struct {
@@ -59,7 +63,7 @@ func handlePrompt(c *gin.Context) {
 	}
 
 	reqBody := OllamaRequest{
-		Model: "qwen2.5:0.5b",
+		Model: "qwen3:1.7b",
 		Messages: []Message{
 			{
 				Role:    "user",
@@ -102,6 +106,12 @@ func handlePrompt(c *gin.Context) {
 	}
 
 	p.Answer = ollamaResp.Message.Content
+	p.TotalDuration = ollamaResp.TotalDuration
+	p.EvalCount = ollamaResp.EvalCount
+	p.EvalDuration = ollamaResp.EvalDuration
+	if ollamaResp.EvalDuration > 0 {
+		p.TokensPerSec = float64(ollamaResp.EvalCount) * 1e9 / float64(ollamaResp.EvalDuration)
+	}
 	c.JSON(http.StatusOK, p)
 }
 
