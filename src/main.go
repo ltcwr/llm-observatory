@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+    "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Chat struct {
@@ -45,7 +47,48 @@ type OllamaRequest struct {
 	Stream   bool      `json:"stream"`
 }
 
-const ollamaURL = "http://localhost:11434/api/chat"
+
+var (
+    llmRequestsTotal = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "llm_requests_total",
+            Help: "Total number of LLM requests",
+        },
+    )
+
+    llmErrorsTotal = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "llm_errors_total",
+            Help: "Total number of LLM errors",
+        },
+    )
+
+    llmRequestDuration = prometheus.NewHistogram(
+        prometheus.HistogramOpts{
+            Name:    "llm_request_duration_seconds",
+            Help:    "Duration of LLM requests",
+            Buckets: prometheus.DefBuckets,
+        },
+    )
+
+    llmTokensTotal = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "llm_tokens_total",
+            Help: "Total tokens generated",
+        },
+    )
+)
+
+func getEnv(key, fallback string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+var ollamaURL = getEnv("OLLAMA_URL", "http://localhost:11434/api/chat")
+
 
 func helloworld(c *gin.Context) { // for debuging
 	c.String(
@@ -58,6 +101,10 @@ func helloworld(c *gin.Context) { // for debuging
 func handlePrompt(c *gin.Context) {
 	var p Chat
 	requestID := c.GetString("request_id")
+	model := getEnv("MODEL", "qwen2.5:0.5b")
+
+	start := time.Now()
+	llmRequestsTotal.Inc()
 
 	if err := c.ShouldBindJSON(&p); err != nil {
 		slog.Error("invalid request body", "request_id", requestID, "error", err.Error())
@@ -74,7 +121,7 @@ func handlePrompt(c *gin.Context) {
 )
 
 	reqBody := OllamaRequest{
-		Model: "qwen2.5:0.5b",
+		Model: model,
 		Messages: []Message{
 			{
 				Role:    "user",
@@ -142,6 +189,9 @@ func handlePrompt(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, p)
+
+	llmRequestDuration.Observe(time.Since(start).Seconds())
+	llmTokensTotal.Add(float64(p.EvalCount))
 }
 
 func ginRequestLogger() gin.HandlerFunc {
@@ -167,6 +217,14 @@ func ginRequestLogger() gin.HandlerFunc {
 }
 
 func main() {
+
+	prometheus.MustRegister(
+        llmRequestsTotal,
+        llmErrorsTotal,
+        llmRequestDuration,
+        llmTokensTotal,
+    )
+
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
@@ -179,6 +237,8 @@ func main() {
 
 	engine.POST("/chat", handlePrompt)
 
+	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
 	slog.Info("server starting", "addr", "localhost:8080")
-	engine.Run("localhost:8080")
+	engine.Run("0.0.0.0:8080")
 }
