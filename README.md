@@ -1,31 +1,55 @@
 # LLM Observatory
 
 <p align="center">
-  <!-- Observatory image goes here -->
-  <img src="./assets/img/observatory.jpg" width="500">
+  <img src="./assets/img/observatory.jpg" width="500" alt="LLM Observatory">
 </p>
 
 <p align="center">
-  <strong>Observability platform for Large Language Models.</strong>
+  <strong>Observability platform for Large Language Model workloads.</strong>
 </p>
 
 ---
 
 ## Overview
 
-LLM Observatory is an open-source project designed to monitor, analyze and understand Large Language Model workloads.
+LLM Observatory is a lightweight Go API that forwards prompts to a local Ollama instance and exposes operational telemetry for monitoring LLM workloads.
 
-The project starts as a lightweight Go API connected to Ollama and will gradually evolve into a complete observability stack for AI applications.
+The project already includes:
 
-The goal is not to build another chatbot, but to provide visibility into how LLMs behave in production environments.
+- a chat API
+- structured JSON logs
+- Prometheus metrics
+- Grafana dashboards
+- Docker Compose for local observability
+
+The objective is to make model behavior visible in production-like environments instead of building another chat UI.
 
 ---
 
-## Current Features
+## Current Architecture
 
-### Chat API
+```text
+Client
+  |
+  v
+Gin API
+  |
+  v
+Ollama
+  |
+  v
+Qwen or another local model
 
-Forward prompts to a local Ollama instance.
+Metrics  ----------> Prometheus
+Dashboards -------> Grafana
+Structured logs --> stdout
+```
+
+---
+
+## Features
+
+### Chat endpoint
 
 ```http
 POST /chat
@@ -35,44 +59,80 @@ Example request:
 
 ```json
 {
-  "prompt": "What is Kubernetes?"
+  "prompt": "What is Kubernetes?",
+  "model": "qwen2.5:0.5b"
 }
 ```
+
+`model` is optional. If omitted, the API uses the `MODEL` environment variable.
 
 Example response:
 
 ```json
 {
   "prompt": "What is Kubernetes?",
-  "answer": "Kubernetes is..."
+  "model": "qwen2.5:0.5b",
+  "answer": "Kubernetes is...",
+  "total_duration_ns": 1234567890,
+  "load_duration_ns": 12345678,
+  "prompt_eval_count": 14,
+  "prompt_eval_duration_ns": 23456789,
+  "eval_count": 92,
+  "eval_duration_ns": 456789012,
+  "tokens_per_sec": 201.4
 }
 ```
 
-### Ollama Integration
+### Health endpoints
 
-
-The API forwards requests to Ollama and returns the generated response.
-
-### Lightweight Architecture
-
-```text
-Client
-  ↓
-Gin API
-  ↓
-Ollama
-  ↓
-Qwen
+```http
+GET /healthz
+GET /readyz
 ```
+
+- `/healthz` reports whether the API process is up
+- `/readyz` checks whether Ollama is reachable
+
+### Prometheus metrics
+
+```http
+GET /metrics
+```
+
+The API exposes labeled metrics for:
+
+- request totals by endpoint, model and status
+- error totals by endpoint, model and error type
+- request latency
+- generated tokens
+- prompt tokens
+- model total duration
+- model load duration
+- model evaluation duration
+- token generation speed
+
+### Structured logging
+
+Every request gets a `request_id` and is logged in JSON with:
+
+- HTTP method
+- path
+- status
+- latency
+- selected model
+- prompt and answer sizes
+- upstream Ollama failures
 
 ---
 
 ## Tech Stack
 
-* Go
-* Gin
-* Ollama
-* REST API
+- Go
+- Gin
+- Ollama
+- Prometheus
+- Grafana
+- Docker Compose
 
 ---
 
@@ -80,112 +140,157 @@ Qwen
 
 ### Requirements
 
-* Go 1.22+
-* Ollama
+- Go 1.25+
+- Ollama
+- A local model pulled in Ollama
 
-### Start Ollama
+### Run locally
 
-```bash
-ollama run 'your model'
-```
-
-### Start the API
+Start Ollama with a model:
 
 ```bash
-go run .
+ollama run qwen2.5:0.5b
 ```
 
-The server will be available at:
+Start the API:
 
-```text
-http://localhost:8080
+```bash
+go run ./src
+```
+
+Available endpoints:
+
+- API: `http://localhost:8080`
+- Metrics: `http://localhost:8080/metrics`
+- Health: `http://localhost:8080/healthz`
+- Readiness: `http://localhost:8080/readyz`
+
+### Run with Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Available services:
+
+- API: `http://localhost:8080`
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`
+
+Default Grafana credentials:
+
+- user: `admin`
+- password: `admin`
+
+---
+
+## Configuration
+
+Environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MODEL` | `qwen2.5:0.5b` | Default Ollama model used when `model` is not provided in `/chat` |
+| `OLLAMA_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
+| `OLLAMA_HEALTH_URL` | derived from `OLLAMA_URL` as `/api/tags` | Ollama readiness endpoint |
+| `OLLAMA_TIMEOUT_SECONDS` | `60` | Timeout used for upstream HTTP calls |
+
+Example `.env.example`:
+
+```env
+OLLAMA_URL=http://host.docker.internal:11434/api/chat
+OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
+OLLAMA_TIMEOUT_SECONDS=60
+MODEL=qwen2.5:0.5b
 ```
 
 ---
 
-## Project Vision
+## Observability
 
-Most AI projects focus on building applications.
+### Prometheus
 
-LLM Observatory focuses on understanding, monitoring and operating LLM workloads.
+Prometheus scrapes the API service through Docker networking using:
 
-The long-term objective is to provide a complete observability platform for AI systems.
+```yaml
+targets: ["api:8080"]
+```
+
+### Grafana dashboard
+
+The provided dashboard includes:
+
+- requests per second
+- error rate
+- latency percentiles
+- total requests
+- generated tokens
+- prompt tokens
+- token throughput
+- generation speed
+- model load time
 
 ---
 
 ## Roadmap
 
-### Phase 1 — Core API
+### Phase 1 - Core API
 
-* [x] Go API
-* [x] Ollama integration
-* [x] Local inference
-* [ ] Structured logging
+- [x] Go API
+- [x] Ollama integration
+- [x] Local inference
+- [x] Structured logging
+- [x] Health endpoints
+- [x] Request correlation identifiers
 
-### Phase 2 — Metrics
+### Phase 2 - Metrics
 
-* [ ] Prometheus integration
-* [ ] Request counter
-* [ ] Latency metrics
-* [ ] Error tracking
-* [ ] Token generation metrics
+- [x] Prometheus integration
+- [x] Request counter
+- [x] Latency metrics
+- [x] Error tracking
+- [x] Token generation metrics
+- [x] Prompt token metrics
+- [x] Generation speed metrics
 
-### Phase 3 — Visualization
+### Phase 3 - Visualization
 
-* [ ] Grafana dashboards
-* [ ] Performance analytics
-* [ ] Model comparison dashboards
+- [x] Grafana dashboards
+- [x] Performance analytics
+- [ ] Model comparison dashboards
 
-### Phase 4 — Logging
+### Phase 4 - Logging
 
-* [ ] Loki integration
-* [ ] Centralized logs
-* [ ] Request tracing identifiers
+- [ ] Loki integration
+- [ ] Centralized logs
 
-### Phase 5 — Distributed Tracing
+### Phase 5 - Distributed Tracing
 
-* [ ] OpenTelemetry
-* [ ] Tempo integration
-* [ ] End-to-end request tracing
+- [ ] OpenTelemetry
+- [ ] Tempo integration
+- [ ] End-to-end request tracing
 
-### Phase 6 — Cloud Native
+### Phase 6 - Cloud Native
 
-* [ ] Docker support
-* [ ] Kubernetes deployment
-* [ ] Helm charts
-* [ ] Horizontal scaling
+- [x] Docker support
+- [ ] Kubernetes deployment
+- [ ] Helm charts
+- [ ] Horizontal scaling
 
-### Phase 7 — AI Operations
+### Phase 7 - AI Operations
 
-* [ ] Multi-model support
-* [ ] Cost estimation
-* [ ] Token analytics
-* [ ] Model health monitoring
-* [ ] AI workload observability dashboards
-
----
-
-## Future Architecture
-
-```text
-Client
-    ↓
-API Gateway
-    ↓
-LLM Observatory
-    ↓
-Ollama / vLLM
-    ↓
-Models
-
-Metrics ─────► Prometheus
-Logs ────────► Loki
-Traces ──────► Tempo
-
-               ↓
-            Grafana
-```
+- [x] Multi-model request support
+- [ ] Cost estimation
+- [ ] Token analytics by tenant or application
+- [ ] Model health monitoring
+- [ ] AI workload observability dashboards
 
 ---
 
-## This README got translated by AI for a better understanding of the majority.
+## Next Logical Additions
+
+- add Loki for centralized logs
+- add OpenTelemetry traces
+- add tests with a mocked Ollama backend
+- add per-model comparison panels
+- add Kubernetes manifests or Helm

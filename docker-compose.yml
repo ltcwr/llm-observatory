@@ -7,6 +7,8 @@ services:
       - "8080:8080"
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434/api/chat
+      - OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
+      - OLLAMA_TIMEOUT_SECONDS=60
       - MODEL=${MODEL:-qwen2.5:0.5b}
       - GIN_MODE=release
     extra_hosts:

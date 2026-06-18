@@ -1,7 +1,7 @@
 {
   "title": "LLM Observatory",
-  "description": "Observability dashboard for LLM workloads",
-  "tags": ["llm", "observatory", "ollama"],
+  "description": "A light, studio-style analytics dashboard for Ollama-backed LLM workloads",
+  "tags": ["llm", "observability", "ollama", "prometheus"],
   "timezone": "browser",
   "editable": true,
   "refresh": "10s",
@@ -14,20 +14,20 @@
     {
       "id": 1,
       "type": "row",
-      "title": "Overview",
+      "title": "Studio Overview",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
     },
     {
       "id": 2,
-      "title": "Requests per second",
+      "title": "Traffic Flow",
       "type": "timeseries",
-      "description": "Rate of LLM requests over time",
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "description": "Successful and failed request throughput",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(llm_requests_total[5m])",
-          "legendFormat": "QPS",
+          "expr": "sum by (status) (rate(llm_requests_total{endpoint=\"/chat\"}[5m]))",
+          "legendFormat": "{{status}}",
           "refId": "A"
         }
       ],
@@ -36,9 +36,13 @@
           "unit": "reqps",
           "color": { "mode": "palette-classic" },
           "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "lineInterpolation": "smooth",
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": true,
+            "lineWidth": 2,
+            "gradientMode": "opacity"
           }
         },
         "overrides": []
@@ -49,31 +53,34 @@
     },
     {
       "id": 3,
-      "title": "Error rate",
+      "title": "Failures & Error Share",
       "type": "timeseries",
-      "description": "Rate of LLM errors over time",
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "description": "Errors per second and error percentage",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(llm_errors_total[5m])",
+          "expr": "sum(rate(llm_errors_total{endpoint=\"/chat\"}[5m]))",
           "legendFormat": "Errors/s",
           "refId": "A"
         },
         {
-          "expr": "rate(llm_errors_total[5m]) / rate(llm_requests_total[5m]) * 100",
+          "expr": "(sum(rate(llm_errors_total{endpoint=\"/chat\"}[5m])) / clamp_min(sum(rate(llm_requests_total{endpoint=\"/chat\"}[5m])), 0.000001)) * 100",
           "legendFormat": "Error %",
           "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "eps",
           "color": { "mode": "palette-classic" },
           "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
             "lineInterpolation": "smooth",
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": true,
+            "lineWidth": 2,
+            "gradientMode": "opacity"
           }
         },
         "overrides": [
@@ -82,6 +89,12 @@
             "properties": [
               { "id": "unit", "value": "percent" },
               { "id": "min", "value": 0 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Errors/s" },
+            "properties": [
+              { "id": "unit", "value": "eps" }
             ]
           }
         ]
@@ -92,24 +105,24 @@
     },
     {
       "id": 4,
-      "title": "Request latency (p50 / p95 / p99)",
+      "title": "Latency Profile",
       "type": "timeseries",
-      "description": "Histogram percentiles of LLM request duration",
-      "gridPos": { "h": 8, "w": 8, "x": 12, "y": 1 },
+      "description": "API request latency percentiles",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(llm_request_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(llm_request_duration_seconds_bucket{endpoint=\"/chat\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_request_duration_seconds_bucket{endpoint=\"/chat\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(llm_request_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(llm_request_duration_seconds_bucket{endpoint=\"/chat\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -119,9 +132,13 @@
           "unit": "s",
           "color": { "mode": "palette-classic" },
           "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 6,
             "lineInterpolation": "smooth",
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": true,
+            "lineWidth": 2,
+            "gradientMode": "opacity"
           }
         },
         "overrides": []
@@ -132,94 +149,235 @@
     },
     {
       "id": 5,
-      "title": "Total requests",
+      "title": "Requests",
       "type": "stat",
-      "description": "Total number of LLM requests received",
-      "gridPos": { "h": 4, "w": 3, "x": 20, "y": 1 },
+      "description": "All chat requests",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "llm_requests_total",
+          "expr": "sum(llm_requests_total{endpoint=\"/chat\"})",
           "legendFormat": "Requests",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
           "color": { "mode": "fixed", "fixedColor": "blue" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue" }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "light-blue", "value": null },
+              { "color": "blue", "value": 1 }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "horizontal",
+        "justifyMode": "center",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       }
     },
     {
       "id": 6,
-      "title": "Total tokens",
+      "title": "Generated tokens",
       "type": "stat",
-      "description": "Total number of tokens generated",
-      "gridPos": { "h": 4, "w": 3, "x": 20, "y": 5 },
+      "description": "Generated output tokens",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "llm_tokens_total",
-          "legendFormat": "Tokens",
+          "expr": "sum(llm_generated_tokens_total{endpoint=\"/chat\"})",
+          "legendFormat": "Generated",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
           "color": { "mode": "fixed", "fixedColor": "green" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "light-green", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "horizontal",
+        "justifyMode": "center",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       }
     },
     {
       "id": 7,
-      "type": "row",
-      "title": "Token Generation",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
-    },
-    {
-      "id": 8,
-      "title": "Token generation rate",
-      "type": "timeseries",
-      "description": "Rate of tokens generated over time",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "title": "Prompt tokens",
+      "type": "stat",
+      "description": "Evaluated prompt tokens",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(llm_tokens_total[5m])",
-          "legendFormat": "Tokens/s",
+          "expr": "sum(llm_prompt_tokens_total{endpoint=\"/chat\"})",
+          "legendFormat": "Prompt",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "yellow", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Speed p95",
+      "type": "stat",
+      "description": "95th percentile of tokens per second",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_generation_speed_tokens_per_second_bucket{endpoint=\"/chat\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "fixed", "fixedColor": "cyan" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "light-cyan", "value": null },
+              { "color": "cyan", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Load p95",
+      "type": "stat",
+      "description": "95th percentile of Ollama model load duration",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_model_load_duration_seconds_bucket{endpoint=\"/chat\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "fixed", "fixedColor": "yellow" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Models",
+      "type": "stat",
+      "description": "Models seen on chat traffic",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "count(count by (model) (llm_requests_total{endpoint=\"/chat\"}))",
+          "legendFormat": "Models",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Model Mix",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 }
+    },
+    {
+      "id": 12,
+      "title": "Request Mix",
+      "type": "timeseries",
+      "description": "Request rate split by model",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (model) (rate(llm_requests_total{endpoint=\"/chat\",status=\"success\"}[5m]))",
+          "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
           "color": { "mode": "palette-classic" },
           "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
             "lineInterpolation": "smooth",
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": true,
+            "lineWidth": 2,
+            "gradientMode": "opacity"
           }
         },
         "overrides": []
@@ -229,16 +387,16 @@
       }
     },
     {
-      "id": 9,
-      "title": "Tokens per second per request (avg)",
+      "id": 13,
+      "title": "Token Throughput",
       "type": "timeseries",
-      "description": "Average generation speed from model responses",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "description": "Output token throughput by model",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(llm_tokens_total[5m]) / rate(llm_requests_total[5m])",
-          "legendFormat": "Avg tokens/req",
+          "expr": "sum by (model) (rate(llm_generated_tokens_total{endpoint=\"/chat\"}[5m]))",
+          "legendFormat": "{{model}}",
           "refId": "A"
         }
       ],
@@ -247,9 +405,47 @@
           "unit": "none",
           "color": { "mode": "palette-classic" },
           "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
             "lineInterpolation": "smooth",
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": true,
+            "lineWidth": 2,
+            "gradientMode": "opacity"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Speed by Model",
+      "type": "timeseries",
+      "description": "95th percentile token generation speed per model",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(llm_generation_speed_tokens_per_second_bucket{endpoint=\"/chat\"}[5m])))",
+          "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 6,
+            "lineInterpolation": "smooth",
+            "showPoints": "never",
+            "spanNulls": true,
+            "lineWidth": 2,
+            "gradientMode": "opacity"
           }
         },
         "overrides": []
