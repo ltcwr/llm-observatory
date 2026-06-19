@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Chat struct {
@@ -160,7 +170,10 @@ var (
 	defaultModel    = getEnv("MODEL", "qwen2.5:0.5b")
 	ollamaChatURL   = getEnv("OLLAMA_URL", "http://localhost:11434/api/chat")
 	ollamaHealthURL = getEnv("OLLAMA_HEALTH_URL", deriveOllamaHealthURL(ollamaChatURL))
-	httpClient      = &http.Client{Timeout: time.Duration(getEnvInt("OLLAMA_TIMEOUT_SECONDS", 60)) * time.Second}
+	httpClient      = &http.Client{
+		Timeout:   time.Duration(getEnvInt("OLLAMA_TIMEOUT_SECONDS", 60)) * time.Second,
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
 )
 
 func deriveOllamaHealthURL(chatURL string) string {
@@ -232,6 +245,7 @@ func handlePrompt(c *gin.Context) {
 
 	var p Chat
 	requestID := c.GetString("request_id")
+	traceID := c.GetString("trace_id")
 	start := time.Now()
 	statusLabel := "client_error"
 	model := defaultModel
@@ -257,6 +271,7 @@ func handlePrompt(c *gin.Context) {
 	slog.Info(
 		"chat request",
 		"request_id", requestID,
+		"trace_id", traceID,
 		"model", model,
 		"prompt_length", len(p.Prompt),
 	)
@@ -298,6 +313,7 @@ func handlePrompt(c *gin.Context) {
 	slog.Info(
 		"ollama request",
 		"request_id", requestID,
+		"trace_id", traceID,
 		"model", model,
 		"ollama_url", ollamaChatURL,
 	)
@@ -381,6 +397,7 @@ func handlePrompt(c *gin.Context) {
 	slog.Info(
 		"chat response",
 		"request_id", requestID,
+		"trace_id", traceID,
 		"model", model,
 		"prompt_eval_count", p.PromptEvalCount,
 		"eval_count", p.EvalCount,
@@ -398,10 +415,20 @@ func incrementErrorMetric(endpoint, model, errorType string) {
 	llmErrorsTotal.WithLabelValues(endpoint, model, errorType).Inc()
 }
 
+func currentTraceID(ctx context.Context) string {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
+}
+
 func ginRequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := uuid.NewString()
+		traceID := currentTraceID(c.Request.Context())
 		c.Set("request_id", requestID)
+		c.Set("trace_id", traceID)
 
 		start := time.Now()
 		c.Next()
@@ -413,8 +440,43 @@ func ginRequestLogger() gin.HandlerFunc {
 			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),
 			"latency_ns", time.Since(start).Nanoseconds(),
+			"trace_id", traceID,
 		)
 	}
+}
+
+func initTracer(ctx context.Context) (func(context.Context) error, error) {
+	exporter, err := otlptracehttp.New(
+		ctx,
+		otlptracehttp.WithEndpoint(getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4318")),
+		otlptracehttp.WithInsecure(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			"",
+			attribute.String("service.name", getEnv("OTEL_SERVICE_NAME", "llm-observatory-api")),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(tracerProvider)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	return tracerProvider.Shutdown, nil
 }
 
 func main() {
@@ -434,8 +496,22 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
+	shutdownTracer, err := initTracer(context.Background())
+	if err != nil {
+		slog.Error("failed to initialize tracing", "error", err.Error())
+	} else {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := shutdownTracer(ctx); err != nil {
+				slog.Error("failed to shutdown tracing", "error", err.Error())
+			}
+		}()
+	}
+
 	engine := gin.New()
 	engine.Use(gin.Recovery())
+	engine.Use(otelgin.Middleware("llm-observatory-api"))
 	engine.Use(ginRequestLogger())
 
 	engine.GET("/", helloworld)

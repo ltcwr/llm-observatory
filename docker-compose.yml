@@ -11,8 +11,12 @@ services:
       - OLLAMA_TIMEOUT_SECONDS=60
       - MODEL=${MODEL:-qwen2.5:0.5b}
       - GIN_MODE=release
+      - OTEL_SERVICE_NAME=llm-observatory-api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=tempo:4318
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - tempo
     restart: unless-stopped
 
   prometheus:
@@ -45,6 +49,49 @@ services:
       - GF_INSTALL_PLUGINS=
     restart: unless-stopped
 
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: llm-observatory-loki
+    ports:
+      - "3100:3100"
+    command:
+      - "-config.file=/etc/loki/config.yml"
+    volumes:
+      - ./loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: llm-observatory-promtail
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+    volumes:
+      - ./promtail/config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+      - api
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: llm-observatory-tempo
+    ports:
+      - "3200:3200"
+      - "4318:4318"
+    command:
+      - "-config.file=/etc/tempo/config.yml"
+    volumes:
+      - ./tempo/config.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/tmp/tempo
+    restart: unless-stopped
+
 networks:
   default:
     name: llm-observatory
+
+volumes:
+  loki-data:
+  tempo-data:

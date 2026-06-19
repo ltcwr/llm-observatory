@@ -20,6 +20,8 @@ The project already includes:
 - structured JSON logs
 - Prometheus metrics
 - Grafana dashboards
+- Loki centralized logs
+- OpenTelemetry traces with Tempo
 - Docker Compose for local observability
 
 The objective is to make model behavior visible in production-like environments instead of building another chat UI.
@@ -42,7 +44,8 @@ Qwen or another local model
 
 Metrics  ----------> Prometheus
 Dashboards -------> Grafana
-Structured logs --> stdout
+Structured logs --> stdout --> Loki --> Grafana
+Traces -----------> OpenTelemetry --> Tempo --> Grafana
 ```
 
 ---
@@ -132,6 +135,10 @@ Every request gets a `request_id` and is logged in JSON with:
 - Ollama
 - Prometheus
 - Grafana
+- Loki
+- Promtail
+- OpenTelemetry
+- Tempo
 - Docker Compose
 
 ---
@@ -176,6 +183,8 @@ Available services:
 - API: `http://localhost:8080`
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`
+- Loki: `http://localhost:3100`
+- Tempo: `http://localhost:3200`
 
 Default Grafana credentials:
 
@@ -194,6 +203,8 @@ Environment variables:
 | `OLLAMA_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
 | `OLLAMA_HEALTH_URL` | derived from `OLLAMA_URL` as `/api/tags` | Ollama readiness endpoint |
 | `OLLAMA_TIMEOUT_SECONDS` | `60` | Timeout used for upstream HTTP calls |
+| `OTEL_SERVICE_NAME` | `llm-observatory-api` | Service name attached to OpenTelemetry traces |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `tempo:4318` in Docker Compose, `localhost:4318` locally | OTLP HTTP endpoint used to export traces |
 
 Example `.env.example`:
 
@@ -202,6 +213,8 @@ OLLAMA_URL=http://host.docker.internal:11434/api/chat
 OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
 OLLAMA_TIMEOUT_SECONDS=60
 MODEL=qwen2.5:0.5b
+OTEL_SERVICE_NAME=llm-observatory-api
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
 ```
 
 ---
@@ -229,6 +242,23 @@ The provided dashboard includes:
 - token throughput
 - generation speed
 - model load time
+- model comparison panels
+- centralized application logs
+
+### Loki logs
+
+Promtail discovers Docker containers and forwards their stdout logs to Loki.
+The API emits JSON logs with `request_id` and `trace_id`, allowing logs to be correlated with Tempo traces in Grafana.
+
+### Tempo traces
+
+The API uses OpenTelemetry instrumentation for:
+
+- inbound Gin requests
+- outbound HTTP calls to Ollama
+- context propagation with W3C trace headers
+
+Tempo receives OTLP HTTP traces on port `4318` and exposes them to Grafana on port `3200`.
 
 ---
 
@@ -257,18 +287,18 @@ The provided dashboard includes:
 
 - [x] Grafana dashboards
 - [x] Performance analytics
-- [ ] Model comparison dashboards
+- [x] Model comparison dashboards
 
 ### Phase 4 - Logging
 
-- [ ] Loki integration
-- [ ] Centralized logs
+- [x] Loki integration
+- [x] Centralized logs
 
 ### Phase 5 - Distributed Tracing
 
-- [ ] OpenTelemetry
-- [ ] Tempo integration
-- [ ] End-to-end request tracing
+- [x] OpenTelemetry
+- [x] Tempo integration
+- [x] End-to-end request tracing
 
 ### Phase 6 - Cloud Native
 
@@ -289,8 +319,5 @@ The provided dashboard includes:
 
 ## Next Logical Additions
 
-- add Loki for centralized logs
-- add OpenTelemetry traces
 - add tests with a mocked Ollama backend
-- add per-model comparison panels
 - add Kubernetes manifests or Helm
