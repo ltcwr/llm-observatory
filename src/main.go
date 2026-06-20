@@ -479,6 +479,21 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	return tracerProvider.Shutdown, nil
 }
 
+func newRouter() *gin.Engine {
+	engine := gin.New()
+	engine.Use(gin.Recovery())
+	engine.Use(otelgin.Middleware("llm-observatory-api"))
+	engine.Use(ginRequestLogger())
+
+	engine.GET("/", helloworld)
+	engine.GET("/healthz", healthz)
+	engine.GET("/readyz", readyz)
+	engine.POST("/chat", handlePrompt)
+	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
+	return engine
+}
+
 func main() {
 	prometheus.MustRegister(
 		llmRequestsTotal,
@@ -509,20 +524,9 @@ func main() {
 		}()
 	}
 
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-	engine.Use(otelgin.Middleware("llm-observatory-api"))
-	engine.Use(ginRequestLogger())
-
-	engine.GET("/", helloworld)
-	engine.GET("/healthz", healthz)
-	engine.GET("/readyz", readyz)
-	engine.POST("/chat", handlePrompt)
-	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
-
 	addr := "0.0.0.0:8080"
 	slog.Info("server starting", "addr", addr, "default_model", defaultModel, "ollama_url", ollamaChatURL)
-	if err := engine.Run(addr); err != nil {
+	if err := newRouter().Run(addr); err != nil {
 		slog.Error("server stopped", "error", err.Error())
 	}
 }

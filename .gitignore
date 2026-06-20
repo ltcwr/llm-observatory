@@ -14,3 +14,9 @@ dist/
 
 # logs
 *.log
+
+# local runtime data
+prometheus/data/
+
+# local env files
+.env

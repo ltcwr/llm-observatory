@@ -1,6 +1,9 @@
 .git
+.env
+*.exe
 bin
 tmp
 *.log
+prometheus/data
 Dockerfile
 docker-compose.yml

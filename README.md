@@ -150,6 +150,7 @@ Every request gets a `request_id` and is logged in JSON with:
 - Go 1.25+
 - Ollama
 - A local model pulled in Ollama
+- Docker Desktop or Docker Engine with Compose, if you want to run the full observability stack
 
 ### Run locally
 
@@ -172,7 +173,23 @@ Available endpoints:
 - Health: `http://localhost:8080/healthz`
 - Readiness: `http://localhost:8080/readyz`
 
+### Run tests
+
+```bash
+go test ./...
+```
+
+The test suite uses a mocked Ollama HTTP server. Ollama does not need to be running for tests.
+
 ### Run with Docker Compose
+
+Start Ollama on the host machine first:
+
+```bash
+ollama run qwen2.5:0.5b
+```
+
+Then start the stack:
 
 ```bash
 docker compose up --build
@@ -186,10 +203,22 @@ Available services:
 - Loki: `http://localhost:3100`
 - Tempo: `http://localhost:3200`
 
+The Compose setup uses `host.docker.internal` so the API container can reach the Ollama process running on the host. The `extra_hosts` entry in `docker-compose.yml` makes this work on Linux Docker Engine as well as Docker Desktop on Windows and macOS.
+
 Default Grafana credentials:
 
 - user: `admin`
 - password: `admin`
+
+### Portability notes
+
+The application can be launched on Windows, macOS, and Linux as long as these are installed:
+
+- Go 1.25+ for local runs and tests
+- Ollama with the configured model pulled locally
+- Docker with Compose for the full monitoring stack
+
+Configuration should be supplied through environment variables or a local `.env` file based on `.env.example`. The Docker image does not copy `.env`, so local secrets and machine-specific values are not baked into the image.
 
 ---
 
@@ -319,5 +348,5 @@ Tempo receives OTLP HTTP traces on port `4318` and exposes them to Grafana on po
 
 ## Next Logical Additions
 
-- add tests with a mocked Ollama backend
 - add Kubernetes manifests or Helm
+- add more tests for readiness, invalid requests and metrics output
