@@ -96,6 +96,15 @@ GET /readyz
 - `/healthz` reports whether the API process is up
 - `/readyz` checks whether Ollama is reachable
 
+### API key authentication
+
+```http
+X-API-Key: your-api-key
+```
+
+If `API_KEY` is set, `POST /chat` requires either `X-API-Key` or `Authorization: Bearer <key>`.
+Health endpoints stay public so Docker, Kubernetes, and load balancers can probe the service without credentials.
+
 ### Prometheus metrics
 
 ```http
@@ -166,6 +175,21 @@ Start the API:
 go run ./src
 ```
 
+To require an API key for chat requests:
+
+```bash
+API_KEY=change-me go run ./src
+```
+
+Then call the API with:
+
+```bash
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: change-me" \
+  -d '{"prompt":"What is Kubernetes?"}'
+```
+
 Available endpoints:
 
 - API: `http://localhost:8080`
@@ -232,6 +256,7 @@ Environment variables:
 | `OLLAMA_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
 | `OLLAMA_HEALTH_URL` | derived from `OLLAMA_URL` as `/api/tags` | Ollama readiness endpoint |
 | `OLLAMA_TIMEOUT_SECONDS` | `60` | Timeout used for upstream HTTP calls |
+| `API_KEY` | empty | Optional API key required by `POST /chat` when set |
 | `OTEL_SERVICE_NAME` | `llm-observatory-api` | Service name attached to OpenTelemetry traces |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `tempo:4318` in Docker Compose, `localhost:4318` locally | OTLP HTTP endpoint used to export traces |
 
@@ -242,6 +267,7 @@ OLLAMA_URL=http://host.docker.internal:11434/api/chat
 OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
 OLLAMA_TIMEOUT_SECONDS=60
 MODEL=qwen2.5:0.5b
+API_KEY=change-me
 OTEL_SERVICE_NAME=llm-observatory-api
 OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
 ```
@@ -257,6 +283,19 @@ Prometheus scrapes the API service through Docker networking using:
 ```yaml
 targets: ["api:8080"]
 ```
+
+`/metrics` is intentionally left unauthenticated in the local Compose stack so Prometheus can scrape it directly.
+For a production deployment, expose it only on a private network or protect it at the ingress/reverse-proxy layer.
+
+### Container healthchecks
+
+The API image defines a Docker healthcheck against:
+
+```http
+GET /healthz
+```
+
+`docker-compose.yml` also defines healthchecks for the API, Prometheus, Grafana, Loki, Promtail, and Tempo using each service's local HTTP health or readiness endpoint.
 
 ### Grafana dashboard
 

@@ -10,6 +10,7 @@ services:
       - OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
       - OLLAMA_TIMEOUT_SECONDS=60
       - MODEL=${MODEL:-qwen2.5:0.5b}
+      - API_KEY=${API_KEY:-}
       - GIN_MODE=release
       - OTEL_SERVICE_NAME=llm-observatory-api
       - OTEL_EXPORTER_OTLP_ENDPOINT=tempo:4318
@@ -17,6 +18,12 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - tempo
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   prometheus:
@@ -32,6 +39,12 @@ services:
       - "--web.console.libraries=/etc/prometheus/console_libraries"
       - "--web.console.templates=/etc/prometheus/consoles"
       - "--web.enable-lifecycle"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   grafana:
@@ -47,6 +60,12 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_INSTALL_PLUGINS=
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health | grep -q '\"database\":\"ok\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   loki:
@@ -59,6 +78,12 @@ services:
     volumes:
       - ./loki/config.yml:/etc/loki/config.yml:ro
       - loki-data:/loki
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   promtail:
@@ -73,6 +98,12 @@ services:
     depends_on:
       - loki
       - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9080/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   tempo:
@@ -86,6 +117,12 @@ services:
     volumes:
       - ./tempo/config.yml:/etc/tempo/config.yml:ro
       - tempo-data:/tmp/tempo
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3200/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
 networks:

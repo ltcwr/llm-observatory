@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -170,6 +171,7 @@ var (
 	defaultModel    = getEnv("MODEL", "qwen2.5:0.5b")
 	ollamaChatURL   = getEnv("OLLAMA_URL", "http://localhost:11434/api/chat")
 	ollamaHealthURL = getEnv("OLLAMA_HEALTH_URL", deriveOllamaHealthURL(ollamaChatURL))
+	apiKey          = strings.TrimSpace(getEnv("API_KEY", ""))
 	httpClient      = &http.Client{
 		Timeout:   time.Duration(getEnvInt("OLLAMA_TIMEOUT_SECONDS", 60)) * time.Second,
 		Transport: otelhttp.NewTransport(http.DefaultTransport),
@@ -445,6 +447,35 @@ func ginRequestLogger() gin.HandlerFunc {
 	}
 }
 
+func apiKeyAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if apiKey == "" {
+			c.Next()
+			return
+		}
+
+		token := strings.TrimSpace(c.GetHeader("X-API-Key"))
+		if token == "" {
+			token = strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+			token = strings.TrimSpace(token)
+		}
+
+		if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
+			slog.Warn(
+				"unauthorized request",
+				"request_id", c.GetString("request_id"),
+				"path", c.Request.URL.Path,
+			)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "missing or invalid API key",
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
 func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	exporter, err := otlptracehttp.New(
 		ctx,
@@ -488,7 +519,11 @@ func newRouter() *gin.Engine {
 	engine.GET("/", helloworld)
 	engine.GET("/healthz", healthz)
 	engine.GET("/readyz", readyz)
-	engine.POST("/chat", handlePrompt)
+
+	protected := engine.Group("/")
+	protected.Use(apiKeyAuth())
+	protected.POST("/chat", handlePrompt)
+
 	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	return engine

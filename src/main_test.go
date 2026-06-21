@@ -117,3 +117,82 @@ func TestChatReturnsBadGatewayWhenOllamaFails(t *testing.T) {
 		t.Fatalf("unexpected error body: %s", rec.Body.String())
 	}
 }
+
+func TestProtectedEndpointsRequireAPIKeyWhenConfigured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	oldAPIKey := apiKey
+	apiKey = "secret"
+	defer func() {
+		apiKey = oldAPIKey
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"Salut"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	newRouter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProtectedEndpointsAcceptAPIKeyHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Response{
+			Model: "test-model",
+			Message: Message{
+				Role:    "assistant",
+				Content: "Bonjour",
+			},
+			Done: true,
+		})
+	}))
+	defer ollama.Close()
+
+	oldURL := ollamaChatURL
+	oldModel := defaultModel
+	oldAPIKey := apiKey
+	ollamaChatURL = ollama.URL
+	defaultModel = "test-model"
+	apiKey = "secret"
+	defer func() {
+		ollamaChatURL = oldURL
+		defaultModel = oldModel
+		apiKey = oldAPIKey
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"Salut"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "secret")
+	rec := httptest.NewRecorder()
+
+	newRouter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHealthEndpointsStayPublicWhenAPIKeyConfigured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	oldAPIKey := apiKey
+	apiKey = "secret"
+	defer func() {
+		apiKey = oldAPIKey
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	newRouter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
