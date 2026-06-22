@@ -67,6 +67,26 @@ type OllamaRequest struct {
 	Stream   bool      `json:"stream"`
 }
 
+const (
+	defaultRequestBodyLimitBytes = 1 << 20
+	defaultOllamaTimeoutSeconds  = 60
+)
+
+type Config struct {
+	DefaultModel          string
+	OllamaChatURL         string
+	OllamaHealthURL       string
+	APIKey                string
+	RequestBodyLimitBytes int64
+	OTELServiceName       string
+	OTELEndpoint          string
+}
+
+type Server struct {
+	config     Config
+	httpClient *http.Client
+}
+
 var (
 	llmRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -167,16 +187,52 @@ func getEnvInt(key string, fallback int) int {
 	return v
 }
 
-var (
-	defaultModel    = getEnv("MODEL", "qwen2.5:0.5b")
-	ollamaChatURL   = getEnv("OLLAMA_URL", "http://localhost:11434/api/chat")
-	ollamaHealthURL = getEnv("OLLAMA_HEALTH_URL", deriveOllamaHealthURL(ollamaChatURL))
-	apiKey          = strings.TrimSpace(getEnv("API_KEY", ""))
-	httpClient      = &http.Client{
-		Timeout:   time.Duration(getEnvInt("OLLAMA_TIMEOUT_SECONDS", 60)) * time.Second,
+func getEnvInt64(key string, fallback int64) int64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	return v
+}
+
+func loadConfig() Config {
+	ollamaChatURL := getEnv("OLLAMA_URL", "http://localhost:11434/api/chat")
+	return Config{
+		DefaultModel:          getEnv("MODEL", "qwen2.5:0.5b"),
+		OllamaChatURL:         ollamaChatURL,
+		OllamaHealthURL:       getEnv("OLLAMA_HEALTH_URL", deriveOllamaHealthURL(ollamaChatURL)),
+		APIKey:                strings.TrimSpace(getEnv("API_KEY", "")),
+		RequestBodyLimitBytes: getEnvInt64("REQUEST_BODY_LIMIT_BYTES", defaultRequestBodyLimitBytes),
+		OTELServiceName:       getEnv("OTEL_SERVICE_NAME", "llm-observatory-api"),
+		OTELEndpoint:          getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4318"),
+	}
+}
+
+func newHTTPClient(timeoutSeconds int) *http.Client {
+	return &http.Client{
+		Timeout:   time.Duration(timeoutSeconds) * time.Second,
 		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	}
-)
+}
+
+func newServer(config Config, client *http.Client) *Server {
+	if config.RequestBodyLimitBytes <= 0 {
+		config.RequestBodyLimitBytes = defaultRequestBodyLimitBytes
+	}
+	if client == nil {
+		client = newHTTPClient(defaultOllamaTimeoutSeconds)
+	}
+
+	return &Server{
+		config:     config,
+		httpClient: client,
+	}
+}
 
 func deriveOllamaHealthURL(chatURL string) string {
 	parsed, err := url.Parse(chatURL)
@@ -204,10 +260,10 @@ func healthz(c *gin.Context) {
 	})
 }
 
-func readyz(c *gin.Context) {
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, ollamaHealthURL, nil)
+func (s *Server) readyz(c *gin.Context) {
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, s.config.OllamaHealthURL, nil)
 	if err != nil {
-		slog.Error("failed to create readiness request", "error", err.Error(), "ollama_health_url", ollamaHealthURL)
+		slog.Error("failed to create readiness request", "error", err.Error(), "ollama_health_url", s.config.OllamaHealthURL)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error",
 			"error":  "failed to prepare readiness check",
@@ -215,9 +271,9 @@ func readyz(c *gin.Context) {
 		return
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		slog.Error("readiness check failed", "error", err.Error(), "ollama_health_url", ollamaHealthURL)
+		slog.Error("readiness check failed", "error", err.Error(), "ollama_health_url", s.config.OllamaHealthURL)
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not_ready",
 			"error":  "ollama unreachable",
@@ -227,22 +283,22 @@ func readyz(c *gin.Context) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		slog.Error("readiness check returned non-200", "status_code", resp.StatusCode, "ollama_health_url", ollamaHealthURL)
+		slog.Error("readiness check returned non-200", "status_code", resp.StatusCode, "ollama_health_url", s.config.OllamaHealthURL)
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status":              "not_ready",
 			"ollama_status_code":  resp.StatusCode,
-			"ollama_health_check": ollamaHealthURL,
+			"ollama_health_check": s.config.OllamaHealthURL,
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":              "ready",
-		"ollama_health_check": ollamaHealthURL,
+		"ollama_health_check": s.config.OllamaHealthURL,
 	})
 }
 
-func handlePrompt(c *gin.Context) {
+func (s *Server) handlePrompt(c *gin.Context) {
 	const endpoint = "/chat"
 
 	var p Chat
@@ -250,7 +306,7 @@ func handlePrompt(c *gin.Context) {
 	traceID := c.GetString("trace_id")
 	start := time.Now()
 	statusLabel := "client_error"
-	model := defaultModel
+	model := s.config.DefaultModel
 
 	defer func() {
 		llmRequestsTotal.WithLabelValues(endpoint, model, statusLabel).Inc()
@@ -262,6 +318,15 @@ func handlePrompt(c *gin.Context) {
 		slog.Error("invalid request body", "request_id", requestID, "error", err.Error())
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
+		})
+		return
+	}
+
+	p.Prompt = strings.TrimSpace(p.Prompt)
+	if p.Prompt == "" {
+		incrementErrorMetric(endpoint, model, "empty_prompt")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "prompt must not be empty",
 		})
 		return
 	}
@@ -300,7 +365,7 @@ func handlePrompt(c *gin.Context) {
 		return
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, ollamaChatURL, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, s.config.OllamaChatURL, bytes.NewBuffer(body))
 	if err != nil {
 		statusLabel = "internal_error"
 		incrementErrorMetric(endpoint, model, "build_upstream_request")
@@ -317,10 +382,10 @@ func handlePrompt(c *gin.Context) {
 		"request_id", requestID,
 		"trace_id", traceID,
 		"model", model,
-		"ollama_url", ollamaChatURL,
+		"ollama_url", s.config.OllamaChatURL,
 	)
 
-	resp, err := httpClient.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		statusLabel = "upstream_error"
 		incrementErrorMetric(endpoint, model, "upstream_unreachable")
@@ -350,9 +415,8 @@ func handlePrompt(c *gin.Context) {
 		)
 
 		c.JSON(http.StatusBadGateway, gin.H{
-			"error":                "ollama returned non-200 response",
-			"ollama_status_code":   resp.StatusCode,
-			"ollama_response_body": strings.TrimSpace(string(bodyBytes)),
+			"error":              "ollama returned non-200 response",
+			"ollama_status_code": resp.StatusCode,
 		})
 		return
 	}
@@ -447,9 +511,9 @@ func ginRequestLogger() gin.HandlerFunc {
 	}
 }
 
-func apiKeyAuth() gin.HandlerFunc {
+func (s *Server) apiKeyAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if apiKey == "" {
+		if s.config.APIKey == "" {
 			c.Next()
 			return
 		}
@@ -460,7 +524,7 @@ func apiKeyAuth() gin.HandlerFunc {
 			token = strings.TrimSpace(token)
 		}
 
-		if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.config.APIKey)) != 1 {
 			slog.Warn(
 				"unauthorized request",
 				"request_id", c.GetString("request_id"),
@@ -476,10 +540,19 @@ func apiKeyAuth() gin.HandlerFunc {
 	}
 }
 
-func initTracer(ctx context.Context) (func(context.Context) error, error) {
+func requestBodyLimit(limitBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limitBytes)
+		}
+		c.Next()
+	}
+}
+
+func initTracer(ctx context.Context, config Config) (func(context.Context) error, error) {
 	exporter, err := otlptracehttp.New(
 		ctx,
-		otlptracehttp.WithEndpoint(getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4318")),
+		otlptracehttp.WithEndpoint(config.OTELEndpoint),
 		otlptracehttp.WithInsecure(),
 	)
 	if err != nil {
@@ -490,7 +563,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 		resource.Default(),
 		resource.NewWithAttributes(
 			"",
-			attribute.String("service.name", getEnv("OTEL_SERVICE_NAME", "llm-observatory-api")),
+			attribute.String("service.name", config.OTELServiceName),
 		),
 	)
 	if err != nil {
@@ -510,7 +583,7 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	return tracerProvider.Shutdown, nil
 }
 
-func newRouter() *gin.Engine {
+func newRouter(server *Server) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 	engine.Use(otelgin.Middleware("llm-observatory-api"))
@@ -518,11 +591,12 @@ func newRouter() *gin.Engine {
 
 	engine.GET("/", helloworld)
 	engine.GET("/healthz", healthz)
-	engine.GET("/readyz", readyz)
+	engine.GET("/readyz", server.readyz)
 
 	protected := engine.Group("/")
-	protected.Use(apiKeyAuth())
-	protected.POST("/chat", handlePrompt)
+	protected.Use(requestBodyLimit(server.config.RequestBodyLimitBytes))
+	protected.Use(server.apiKeyAuth())
+	protected.POST("/chat", server.handlePrompt)
 
 	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
@@ -546,7 +620,11 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
-	shutdownTracer, err := initTracer(context.Background())
+	config := loadConfig()
+	client := newHTTPClient(getEnvInt("OLLAMA_TIMEOUT_SECONDS", defaultOllamaTimeoutSeconds))
+	server := newServer(config, client)
+
+	shutdownTracer, err := initTracer(context.Background(), config)
 	if err != nil {
 		slog.Error("failed to initialize tracing", "error", err.Error())
 	} else {
@@ -560,8 +638,8 @@ func main() {
 	}
 
 	addr := "0.0.0.0:8080"
-	slog.Info("server starting", "addr", addr, "default_model", defaultModel, "ollama_url", ollamaChatURL)
-	if err := newRouter().Run(addr); err != nil {
+	slog.Info("server starting", "addr", addr, "default_model", config.DefaultModel, "ollama_url", config.OllamaChatURL)
+	if err := newRouter(server).Run(addr); err != nil {
 		slog.Error("server stopped", "error", err.Error())
 	}
 }

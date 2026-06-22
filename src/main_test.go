@@ -10,6 +10,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func testConfig(ollamaURL string) Config {
+	return Config{
+		DefaultModel:          "test-model",
+		OllamaChatURL:         ollamaURL,
+		OllamaHealthURL:       ollamaURL,
+		RequestBodyLimitBytes: defaultRequestBodyLimitBytes,
+		OTELServiceName:       "test-service",
+		OTELEndpoint:          "localhost:4318",
+	}
+}
+
+func testRouter(config Config) *gin.Engine {
+	return newRouter(newServer(config, http.DefaultClient))
+}
+
 func TestChatUsesMockOllama(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -53,20 +68,11 @@ func TestChatUsesMockOllama(t *testing.T) {
 	}))
 	defer ollama.Close()
 
-	oldURL := ollamaChatURL
-	oldModel := defaultModel
-	ollamaChatURL = ollama.URL + "/api/chat"
-	defaultModel = "test-model"
-	defer func() {
-		ollamaChatURL = oldURL
-		defaultModel = oldModel
-	}()
-
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"Salut"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	newRouter().ServeHTTP(rec, req)
+	testRouter(testConfig(ollama.URL+"/api/chat")).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
@@ -98,17 +104,11 @@ func TestChatReturnsBadGatewayWhenOllamaFails(t *testing.T) {
 	}))
 	defer ollama.Close()
 
-	oldURL := ollamaChatURL
-	ollamaChatURL = ollama.URL
-	defer func() {
-		ollamaChatURL = oldURL
-	}()
-
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"Salut","model":"missing-model"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	newRouter().ServeHTTP(rec, req)
+	testRouter(testConfig(ollama.URL)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d with body %s", rec.Code, rec.Body.String())
@@ -116,22 +116,22 @@ func TestChatReturnsBadGatewayWhenOllamaFails(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "ollama returned non-200 response") {
 		t.Fatalf("unexpected error body: %s", rec.Body.String())
 	}
+	if strings.Contains(rec.Body.String(), "model not found") || strings.Contains(rec.Body.String(), "ollama_response_body") {
+		t.Fatalf("upstream body should not be exposed: %s", rec.Body.String())
+	}
 }
 
 func TestProtectedEndpointsRequireAPIKeyWhenConfigured(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	oldAPIKey := apiKey
-	apiKey = "secret"
-	defer func() {
-		apiKey = oldAPIKey
-	}()
+	config := testConfig("http://example.invalid")
+	config.APIKey = "secret"
 
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"Salut"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	newRouter().ServeHTTP(rec, req)
+	testRouter(config).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d with body %s", rec.Code, rec.Body.String())
@@ -154,24 +154,15 @@ func TestProtectedEndpointsAcceptAPIKeyHeader(t *testing.T) {
 	}))
 	defer ollama.Close()
 
-	oldURL := ollamaChatURL
-	oldModel := defaultModel
-	oldAPIKey := apiKey
-	ollamaChatURL = ollama.URL
-	defaultModel = "test-model"
-	apiKey = "secret"
-	defer func() {
-		ollamaChatURL = oldURL
-		defaultModel = oldModel
-		apiKey = oldAPIKey
-	}()
+	config := testConfig(ollama.URL)
+	config.APIKey = "secret"
 
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"Salut"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", "secret")
 	rec := httptest.NewRecorder()
 
-	newRouter().ServeHTTP(rec, req)
+	testRouter(config).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
@@ -181,18 +172,49 @@ func TestProtectedEndpointsAcceptAPIKeyHeader(t *testing.T) {
 func TestHealthEndpointsStayPublicWhenAPIKeyConfigured(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	oldAPIKey := apiKey
-	apiKey = "secret"
-	defer func() {
-		apiKey = oldAPIKey
-	}()
+	config := testConfig("http://example.invalid")
+	config.APIKey = "secret"
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	newRouter().ServeHTTP(rec, req)
+	testRouter(config).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatRejectsEmptyPrompt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"   "}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	testRouter(testConfig("http://example.invalid")).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "prompt must not be empty") {
+		t.Fatalf("unexpected error body: %s", rec.Body.String())
+	}
+}
+
+func TestChatRejectsOversizedRequestBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	config := testConfig("http://example.invalid")
+	config.RequestBodyLimitBytes = 16
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"prompt":"this body is intentionally too large"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	testRouter(config).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }

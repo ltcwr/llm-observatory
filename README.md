@@ -232,7 +232,7 @@ The Compose setup uses `host.docker.internal` so the API container can reach the
 Default Grafana credentials:
 
 - user: `admin`
-- password: `admin`
+- password: value of `GRAFANA_ADMIN_PASSWORD`, falling back to `admin` for local development
 
 ### Portability notes
 
@@ -256,7 +256,9 @@ Environment variables:
 | `OLLAMA_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
 | `OLLAMA_HEALTH_URL` | derived from `OLLAMA_URL` as `/api/tags` | Ollama readiness endpoint |
 | `OLLAMA_TIMEOUT_SECONDS` | `60` | Timeout used for upstream HTTP calls |
+| `REQUEST_BODY_LIMIT_BYTES` | `1048576` | Maximum accepted HTTP request body size for protected endpoints |
 | `API_KEY` | empty | Optional API key required by `POST /chat` when set |
+| `GRAFANA_ADMIN_PASSWORD` | `admin` in Docker Compose | Grafana admin password for the local Compose stack |
 | `OTEL_SERVICE_NAME` | `llm-observatory-api` | Service name attached to OpenTelemetry traces |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `tempo:4318` in Docker Compose, `localhost:4318` locally | OTLP HTTP endpoint used to export traces |
 
@@ -266,8 +268,10 @@ Example `.env.example`:
 OLLAMA_URL=http://host.docker.internal:11434/api/chat
 OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
 OLLAMA_TIMEOUT_SECONDS=60
+REQUEST_BODY_LIMIT_BYTES=1048576
 MODEL=qwen2.5:0.5b
 API_KEY=change-me
+GRAFANA_ADMIN_PASSWORD=change-me
 OTEL_SERVICE_NAME=llm-observatory-api
 OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
 ```

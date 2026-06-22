@@ -9,6 +9,7 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434/api/chat
       - OLLAMA_HEALTH_URL=http://host.docker.internal:11434/api/tags
       - OLLAMA_TIMEOUT_SECONDS=60
+      - REQUEST_BODY_LIMIT_BYTES=${REQUEST_BODY_LIMIT_BYTES:-1048576}
       - MODEL=${MODEL:-qwen2.5:0.5b}
       - API_KEY=${API_KEY:-}
       - GIN_MODE=release
@@ -58,7 +59,7 @@ services:
       - ./grafana/dashboard.json:/var/lib/grafana/dashboards/llm-observatory.json:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_INSTALL_PLUGINS=
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health | grep -q '\"database\":\"ok\"'"]
